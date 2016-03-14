@@ -444,7 +444,7 @@ class EruClient(object):
         data = {
             'addr': addr,
             'podname': pod_name,
-            'is_public': 1 if is_public else 0,
+            'is_public': is_public,
         }
         files = {}
         if docker_cert_path:
