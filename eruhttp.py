@@ -560,12 +560,13 @@ class EruClient(object):
         return self.put(url)
 
     def scale_out(self, app_name, ncore=None, ncontainer=None, pod_name=None,
-                  entrypoints=()):
+                  ceiling=50, entrypoints=()):
         """
         :param app_name: str, eru app name
         :param ncore: int, if not provided, use the most common ncore
         :param ncontainer: int, if not specified, double ncontainer in each
         container group
+        :param ceiling: int, max ncontainer
         :param pod_name: str, if not specified, use the most common pod
         :param entrypoints: tuple, if specified, only scale these entrypoints
         """
@@ -585,6 +586,22 @@ class EruClient(object):
             counter = Counter([c['podname'] for c in containers])
             pod_name = counter.most_common()[0][0]
 
+        def calculate_ncontainer(current_ncontainer, ncontainer, ceiling):
+            if ncontainer:
+                will_reach_ncontainer = current_ncontainer + ncontainer
+            else:
+                will_reach_ncontainer = current_ncontainer * 2
+
+            if will_reach_ncontainer <= ceiling:
+                should_add = ncontainer
+            else:
+                should_add = ceiling - current_ncontainer
+
+            if should_add < 1:
+                raise EruException(500, 'current_ncontainer={}, reached ceiling {}'.format(current_ncontainer, ceiling))
+
+            return should_add
+
         report = []
         for (version, entrypoint, env), container_group in container_groups.iteritems():
             sample_container = container_group[0]
@@ -595,7 +612,9 @@ class EruClient(object):
                 networks.append(ip)
 
             # if ncontainer isn't specified, just double it
-            _ncontainer = ncontainer if ncontainer else len(container_group)
+            current_ncontainer = len(container_group)
+            _ncontainer = calculate_ncontainer(current_ncontainer, ncontainer, ceiling)
+
             # if ncore isn't specified, copy from sample_container
             _ncore = ncore if ncore else len(sample_container['cores']['full'])
             success = self.deploy_private(pod_name,
@@ -612,7 +631,7 @@ class EruClient(object):
             raise EruException(500, 'error during scaling, go check karazhan')
         return report
 
-    def scale_in(self, app_name, ncontainer, pod_names=None, entrypoints=()):
+    def scale_in(self, app_name, ncontainer, pod_names=None, entrypoints=(), floor=2):
         """in rare conditions, app are deploy across different pods, specify pods to kill"""
         containers = self.list_app_containers(app_name, start=0, limit=100)
         if entrypoints:
@@ -630,7 +649,7 @@ class EruClient(object):
         to_remove = []
         for (version, entrypoint, env), container_group in container_groups.iteritems():
             current_ncontainer = len(container_group)
-            if current_ncontainer <= 1 or current_ncontainer <= ncontainer:
+            if current_ncontainer <= floor or current_ncontainer <= ncontainer:
                 # there's nothing to scale in
                 continue
             # kill the most `ncontainer` eldest containers
